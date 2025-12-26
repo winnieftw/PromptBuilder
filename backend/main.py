@@ -173,26 +173,32 @@ def generate_questions(payload: Idea):
                 {
                     "role": "developer",
                     "content": (
-                        "You generate form questions to help gather requirements for an app/software project.\n"
+                        "You generate form questions to help gather requirements for an app/software project.\n\n"
+
                         "Return ONLY valid JSON matching this schema:\n"
                         "{\n"
                         '  "questions": [\n'
                         "    {\n"
-                        '      "id": string (snake_case stable key like "platform" or "core_features"),\n'
-                        '      "type": one of ["text","textarea","single_select","multi_select","boolean","number"],\n'
+                        '      "id": string (snake_case stable key like \"platform\" or \"core_features\"),\n'
+                        '      "type": one of [\"text\",\"textarea\",\"single_select\",\"multi_select\",\"boolean\",\"number\"],\n'
                         '      "question": string,\n'
                         '      "required": boolean,\n'
-                        '      "placeholder": string (optional),\n'
-                        '      "choices": [string, ...] (required only for single_select/multi_select)\n'
+                        '      "placeholder": string | null,\n'
+                        '      "choices": [string, ...] | null\n'
                         "    }\n"
                         "  ]\n"
                         "}\n\n"
-                        "Rules:\n"
+
+                        "IMPORTANT RULES:\n"
                         "- Produce 8–12 questions.\n"
-                        "- Use 'single_select' for one choice; 'multi_select' for multiple.\n"
-                        "- Keep choices short and helpful.\n"
-                        "- Do NOT include any keys besides the schema.\n"
-                        "- Do NOT include markdown or commentary.\n"
+                        "- Use 'single_select' when exactly one option is allowed.\n"
+                        "- Use 'multi_select' when multiple options are allowed.\n"
+                        "- Include 'choices' ONLY for single_select or multi_select.\n"
+                        "- Include 'placeholder' ONLY for 'text' or 'textarea' questions.\n"
+                        "- A placeholder is an example of a good answer and MUST start with 'e.g.,'.\n"
+                        "- For non-text inputs, set placeholder to null.\n"
+                        "- For non-select inputs, set choices to null.\n"
+                        "- Do NOT include markdown, comments, or extra keys.\n"
                     ),
                 },
                 {"role": "user", "content": payload.description},
