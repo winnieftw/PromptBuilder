@@ -9,6 +9,20 @@ from pydantic import BaseModel, Field, ValidationError
 # OpenAI SDK
 from openai import OpenAI
 
+#CORS for fastapi
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="PromptBuilder Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 load_dotenv()
 
 # ---- Config ----
@@ -19,9 +33,6 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
 DEV_MODE = os.getenv("DEV_MODE", "false").lower() in ("1", "true", "yes")
 
 client = OpenAI(api_key=API_KEY) if API_KEY else None
-
-app = FastAPI(title="PromptBuilder Backend")
-
 
 QuestionType = Literal[
     "text",
