@@ -285,3 +285,15 @@ def generate_prompt(payload: PromptRequest):
 
     except Exception:
         return {"prompt": fallback_prompt()}
+    
+@app.get("/debug/openai")
+def debug_openai():
+    if not client:
+        raise HTTPException(status_code=500, detail="No OpenAI client (missing OPENAI_API_KEY).")
+
+    r = client.responses.create(
+        model=MODEL,
+        input="Reply with OK"
+    )
+    return {"ok": True, "model": MODEL, "output": r.output_text}
+
