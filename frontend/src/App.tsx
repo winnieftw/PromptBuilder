@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { generatePrompt, generateQuestions, type Question } from "./api";
+import { generatePrompt, generateQuestions, suggestAnswer, type Question } from "./api";
+
 
 type Answers = Record<string, any>;
 
@@ -18,9 +19,18 @@ export default function App() {
   const [answers, setAnswers] = useState<Answers>({});
   const [finalPrompt, setFinalPrompt] = useState<string>("");
 
+  // Suggestion Options States
+  const [autoFillLoading, setAutoFillLoading] = useState(false);
+  const [autoFillProgress, setAutoFillProgress] = useState<{ done: number; total: number }>({
+    done: 0,
+    total: 0,
+  });
+
+
   const [loadingQuestions, setLoadingQuestions] = useState(false);
   const [loadingPrompt, setLoadingPrompt] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
 
   async function onGenerateQuestions() {
     setError(null);
@@ -37,7 +47,7 @@ export default function App() {
       const initial: Answers = {};
       for (const q of data.questions) {
         if (q.type === "multi_select") initial[q.id] = [];
-        else if (q.type === "boolean") initial[q.id] = false;
+        else if (q.type === "boolean") initial[q.id] = null;
         else initial[q.id] = "";
       }
       setAnswers(initial);
@@ -197,6 +207,50 @@ export default function App() {
     }
   }
 
+  // For "suggest me"/"autofill"
+  async function onAutoFillAll() {
+    if (!idea.trim() || questions.length === 0) return;
+
+    setError(null);
+    setAutoFillLoading(true);
+    setAutoFillProgress({ done: 0, total: questions.length });
+
+    try {
+      // We'll build up answers gradually so each next suggestion sees prior selections.
+      let workingAnswers = { ...answers };
+
+      for (let i = 0; i < questions.length; i++) {
+        const q = questions[i];
+
+        // optional: skip if already answered (comment out if you want overwrite behavior)
+        const existing = workingAnswers[q.id];
+        const hasValue =
+          q.type === "boolean"
+            ? false // always allow autofill to set it
+            : (Array.isArray(existing) && existing.length > 0) ||
+              (!Array.isArray(existing) && existing !== "" && existing !== null && existing !== undefined);
+
+        if (!hasValue) {
+          const res = await suggestAnswer({
+            idea: idea.trim(),
+            question: q,
+            current_answers: cleanAnswers(workingAnswers),
+          });
+
+          workingAnswers = { ...workingAnswers, [res.id]: res.value };
+          setAnswers(workingAnswers); // update UI as we go
+        }
+
+        setAutoFillProgress({ done: i + 1, total: questions.length });
+      }
+    } catch (e: any) {
+      setError(e?.message ?? "Unknown error during auto-fill");
+    } finally {
+      setAutoFillLoading(false);
+    }
+  }
+
+
   return (
     <div style={{ maxWidth: 950, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
       <h1 style={{ marginBottom: 8 }}>PromptBuilder (Web Prototype)</h1>
@@ -245,6 +299,31 @@ export default function App() {
       {/* Step 2 */}
       {questions.length > 0 && (
         <div style={{ marginTop: 24 }}>
+          <div style={{ margin: "10px 0 16px", display: "flex", gap: 12, alignItems: "center" }}>
+            <button
+              onClick={onAutoFillAll}
+              disabled={autoFillLoading}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                border: "1px solid #222",
+                background: autoFillLoading ? "#ddd" : "#fff",
+                cursor: autoFillLoading ? "default" : "pointer",
+                fontSize: 13,
+              }}
+            >
+              {autoFillLoading ? "Auto-filling..." : "Auto-fill all"}
+            </button>
+
+            {autoFillLoading && (
+              <span style={{ fontSize: 13, color: "#555" }}>
+                {autoFillProgress.done}/{autoFillProgress.total}
+              </span>
+            )}
+          </div>
+
+
+
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
             <h2 style={{ marginBottom: 8 }}>Answer the questions</h2>
             <div style={{ fontSize: 12, color: "#666" }}>

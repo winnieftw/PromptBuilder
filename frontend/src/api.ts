@@ -59,3 +59,35 @@ export async function generatePrompt(payload: GeneratePromptRequest) {
 
   return (await res.json()) as GeneratePromptResponse;
 }
+
+
+/*
+  For Suggestion/Auto-fill options 
+*/
+
+export type SuggestAnswerRequest = {
+  idea: string;
+  question: Question;
+  current_answers: Record<string, any>;
+};
+
+export type SuggestAnswerResponse = {
+  id: string;
+  type: QuestionType;
+  value: any;
+};
+
+export async function suggestAnswer(payload: SuggestAnswerRequest) {
+  const res = await fetch(`${API_BASE}/suggest-answer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Backend error (${res.status}): ${text}`);
+  }
+
+  return (await res.json()) as SuggestAnswerResponse;
+}

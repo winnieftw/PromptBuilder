@@ -80,6 +80,18 @@ class PromptRequest(BaseModel):
 class PromptResponse(BaseModel):
     prompt: str
 
+# For Auto-complete button
+class SuggestAnswerRequest(BaseModel):
+    idea: str
+    question: Question
+    current_answers: Dict[str, Any] = {}
+
+class SuggestAnswerResponse(BaseModel):
+    id: str
+    type: QuestionType
+    value: Any
+
+
 
 @app.get("/")
 def health():
@@ -285,3 +297,93 @@ def generate_prompt(payload: PromptRequest):
 
     except Exception:
         return {"prompt": fallback_prompt()}
+    
+@app.post("/suggest-answer", response_model=SuggestAnswerResponse)
+def suggest_answer(payload: SuggestAnswerRequest):
+    # DEV fallback so your UI works even if OpenAI fails
+    def fallback_value():
+        q = payload.question
+        if q.type == "single_select":
+            return (q.choices or [""])[0]
+        if q.type == "multi_select":
+            return (q.choices or [])[:2]
+        if q.type == "boolean":
+            return True
+        if q.type == "number":
+            return 1
+        if q.type == "textarea":
+            return "e.g., Keep it simple and beginner-friendly."
+        return "e.g., College students building their first app."
+
+    if DEV_MODE or not client:
+        return {"id": payload.question.id, "type": payload.question.type, "value": fallback_value()}
+
+    try:
+        q = payload.question
+
+        constraints = ""
+        if q.type in ("single_select", "multi_select"):
+            constraints = (
+                f"Allowed choices: {q.choices}\n"
+                "You MUST choose only from allowed choices.\n"
+            )
+
+        resp = client.responses.create(
+            model=MODEL,
+            input=[
+                {
+                    "role": "developer",
+                    "content": (
+                        "You suggest an answer for ONE form question.\n"
+                        "Return ONLY valid JSON: {\"value\": <suggested_value>}.\n\n"
+                        "Rules by type:\n"
+                        "- text/textarea: value is a short helpful string.\n"
+                        "- number: value is a number.\n"
+                        "- boolean: value is true/false.\n"
+                        "- single_select: value is ONE string from allowed choices.\n"
+                        "- multi_select: value is an array of strings from allowed choices.\n"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"App idea: {payload.idea}\n\n"
+                        f"Question: {q.question}\n"
+                        f"Type: {q.type}\n"
+                        f"{constraints}\n"
+                        f"Current answers:\n{json.dumps(payload.current_answers, indent=2)}"
+                    ),
+                },
+            ],
+        )
+
+        raw = resp.output_text.strip()
+        data = parse_model_json(raw)
+        value = data.get("value", None)
+
+        # Shape enforcement
+        if q.type == "single_select":
+            if not isinstance(value, str) or not q.choices or value not in q.choices:
+                value = (q.choices or [""])[0]
+        elif q.type == "multi_select":
+            if not isinstance(value, list):
+                value = []
+            value = [v for v in value if isinstance(v, str) and (q.choices is None or v in q.choices)]
+            if q.choices and len(value) == 0:
+                value = q.choices[:2]
+        elif q.type == "boolean":
+            value = bool(value)
+        elif q.type == "number":
+            try:
+                value = float(value)
+            except Exception:
+                value = 1
+        else:
+            if not isinstance(value, str) or not value.strip():
+                value = fallback_value()
+
+        return {"id": q.id, "type": q.type, "value": value}
+
+    except Exception:
+        return {"id": payload.question.id, "type": payload.question.type, "value": fallback_value()}
+
