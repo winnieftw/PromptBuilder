@@ -1,4 +1,3 @@
-
 export type QuestionType =
   | "text"
   | "textarea"
@@ -20,6 +19,15 @@ export type GenerateQuestionsResponse = {
   questions: Question[];
 };
 
+export type GeneratePromptRequest = {
+  idea: string;
+  answers: Record<string, any>;
+};
+
+export type GeneratePromptResponse = {
+  prompt: string;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
 export async function generateQuestions(description: string) {
@@ -35,4 +43,19 @@ export async function generateQuestions(description: string) {
   }
 
   return (await res.json()) as GenerateQuestionsResponse;
+}
+
+export async function generatePrompt(payload: GeneratePromptRequest) {
+  const res = await fetch(`${API_BASE}/generate-prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Backend error (${res.status}): ${text}`);
+  }
+
+  return (await res.json()) as GeneratePromptResponse;
 }
