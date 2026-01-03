@@ -253,9 +253,9 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: 950, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
-      <h1 style={{ marginBottom: 8 }}>PromptBuilder (Web Prototype)</h1>
+      <h1 style={{ marginBottom: 8 }}>IdeaDraft AI (Web Prototype)</h1>
       <p style={{ marginTop: 0, color: "#555" }}>
-        Step 1: describe the app → Step 2: answer questions → Step 3: generate a perfect prompt.
+        Step 1: write your idea → Step 2: answer questions → Step 3: generate a perfect prompt.
       </p>
 
       {/* Step 1 */}
