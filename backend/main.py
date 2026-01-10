@@ -43,9 +43,13 @@ QuestionType = Literal[
     "number",
 ]
 
+Category = Literal["app_dev", "academics", "general"]
+
 
 class Idea(BaseModel):
+    category: Category = "app_dev"
     description: str = Field(..., min_length=3)
+
 
 
 class Question(BaseModel):
@@ -73,8 +77,10 @@ class GenerateQuestionsResponse(BaseModel):
 
 
 class PromptRequest(BaseModel):
+    category: Category = "app_dev"
     idea: str
-    answers: Dict[str, Any]  # question.id -> answer (string/bool/number/list)
+    answers: Dict[str, Any]
+
 
 
 class PromptResponse(BaseModel):
@@ -82,9 +88,11 @@ class PromptResponse(BaseModel):
 
 # For Auto-complete button
 class SuggestAnswerRequest(BaseModel):
+    category: Category = "app_dev"
     idea: str
     question: Question
     current_answers: Dict[str, Any] = {}
+
 
 class SuggestAnswerResponse(BaseModel):
     id: str
@@ -92,10 +100,24 @@ class SuggestAnswerResponse(BaseModel):
     value: Any
 
 
-
-@app.get("/")
-def health():
-    return {"status": "ok", "service": "promptbuilder-backend", "dev_mode": DEV_MODE}
+def category_instructions(category: str) -> str:
+    if category == "academics":
+        return (
+            "Context: The user is working on an academic task (study guide, practice plan, summary, etc.).\n"
+            "Focus questions on: subject/topic scope, course level, exam date/time horizon, format of output "
+            "(study guide outline, flashcards, practice questions), difficulty level, length, and learning goals.\n"
+        )
+    if category == "general":
+        return (
+            "Context: The user has a general request.\n"
+            "Focus questions on: goal, audience, tone, constraints, desired format (bullets, table, steps), "
+            "length, and examples.\n"
+        )
+    # default app_dev
+    return (
+        "Context: The user is building an app/software product.\n"
+        "Focus questions on: platform, target users, core features, UI style, data/storage, auth, integrations, constraints.\n"
+    )
 
 
 def mock_questions_for_app_idea(_: str) -> GenerateQuestionsResponse:
@@ -180,14 +202,34 @@ def parse_model_json(text: str) -> dict:
     raise ValueError("Could not parse JSON from model output.")
 
 
+'''
+    API Endpoints
+'''
+
+@app.get("/")
+def health():
+    return {"status": "ok", "service": "promptbuilder-backend", "dev_mode": DEV_MODE}
+
+
 @app.post("/generate-questions", response_model=GenerateQuestionsResponse)
 def generate_questions(payload: Idea):
     """
-    Input: user's app/software idea (vague)
-    Output: structured list of questions with types & optional choices.
+    Generate structured clarification questions based on the user's idea + selected category.
+
+    Input (Idea):
+      - category: "app_dev" | "academics" | "general"
+      - description: str
+
+    Output (GenerateQuestionsResponse):
+      - questions: List[Question] (each has id, type, question, required, placeholder, choices)
     """
+    # Choose category-specific fallback (optional: you can make mocks per category later)
     if DEV_MODE or not client:
+        # If you haven't built mocks for other categories yet, this is fine for now.
         return mock_questions_for_app_idea(payload.description)
+
+    # Category-specific “lens” injected into the model instructions
+    cat_context = category_instructions(payload.category)
 
     try:
         resp = client.responses.create(
@@ -196,8 +238,9 @@ def generate_questions(payload: Idea):
                 {
                     "role": "developer",
                     "content": (
-                        "You generate form questions to help gather requirements for an app/software project.\n\n"
-
+                        cat_context
+                        + "\n"
+                        + "You generate form questions to help a non-technical user clarify their request.\n\n"
                         "Return ONLY valid JSON matching this schema:\n"
                         "{\n"
                         '  "questions": [\n'
@@ -211,16 +254,14 @@ def generate_questions(payload: Idea):
                         "    }\n"
                         "  ]\n"
                         "}\n\n"
-
                         "IMPORTANT RULES:\n"
                         "- Produce 8–12 questions.\n"
                         "- Use 'single_select' when exactly one option is allowed.\n"
                         "- Use 'multi_select' when multiple options are allowed.\n"
-                        "- Include 'choices' ONLY for single_select or multi_select.\n"
-                        "- Include 'placeholder' ONLY for 'text' or 'textarea' questions.\n"
+                        "- Include 'choices' ONLY for single_select or multi_select; otherwise choices must be null.\n"
+                        "- Include 'placeholder' ONLY for 'text' or 'textarea'; otherwise placeholder must be null.\n"
                         "- A placeholder is an example of a good answer and MUST start with 'e.g.,'.\n"
-                        "- For non-text inputs, set placeholder to null.\n"
-                        "- For non-select inputs, set choices to null.\n"
+                        "- Keep questions concise and beginner-friendly.\n"
                         "- Do NOT include markdown, comments, or extra keys.\n"
                     ),
                 },
@@ -234,39 +275,79 @@ def generate_questions(payload: Idea):
         # Validate against Pydantic models
         return GenerateQuestionsResponse(**data)
 
-    except (ValidationError, ValueError) as e:
-        # If the model returns malformed JSON or invalid schema, fallback so UI keeps working
+    except (ValidationError, ValueError):
+        # Model returned malformed JSON or schema mismatch -> fallback keeps UI working
         return mock_questions_for_app_idea(payload.description)
-    except Exception as e:
+    except Exception:
         # Quota / network / etc. -> fallback for MVP
         return mock_questions_for_app_idea(payload.description)
+
 
 
 @app.post("/generate-prompt", response_model=PromptResponse)
 def generate_prompt(payload: PromptRequest):
     """
-    Input: idea + answers keyed by question.id
-    Output: final copy/paste prompt
+    Input: category + idea + answers keyed by question.id
+    Output: final copy/paste prompt OR a clear service-unavailable message
     """
-    # Simple fallback prompt generator (works even without OpenAI)
-    def fallback_prompt() -> str:
+
+    # Dev-only fallback so you can keep building UI
+    def dev_fallback_prompt() -> str:
         return (
-            "You are an expert software architect and product designer.\n\n"
-            f"App/Software idea:\n{payload.idea}\n\n"
-            "User answers / parameters (id -> value):\n"
+            "[DEV MODE]\n\n"
+            "OpenAI is not connected, so this is a placeholder prompt.\n\n"
+            f"Idea:\n{payload.idea}\n\n"
+            "User parameters (id -> value):\n"
             f"{json.dumps(payload.answers, indent=2)}\n\n"
-            "Deliverables:\n"
-            "1) Clarify missing requirements (ask up to 5 questions if needed)\n"
-            "2) A concise product spec (goals, non-goals, user stories)\n"
-            "3) Feature list (MVP vs V2)\n"
-            "4) Key screens / UI description\n"
-            "5) Data model (entities + relationships)\n"
-            "6) Recommended tech stack and architecture\n"
-            "7) Step-by-step implementation plan\n"
+            "This prompt is shown only because DEV_MODE=true."
         )
 
-    if DEV_MODE or not client:
-        return {"prompt": fallback_prompt()}
+    # 🚨 Production behavior: be explicit if OpenAI is unavailable
+    if not client:
+        if DEV_MODE:
+            return {"prompt": dev_fallback_prompt()}
+        return {
+            "prompt": (
+                "⚠️ AI service unavailable.\n\n"
+                "The app is currently unable to connect to the AI service needed to generate prompts.\n\n"
+                "Please check:\n"
+                "- Your internet connection\n"
+                "- Your OpenAI API key configuration\n"
+                "- That the AI service is available\n\n"
+                "Once the connection is restored, try again."
+            )
+        }
+
+    cat_context = category_instructions(payload.category)
+
+    # Category-specific goal
+    if payload.category == "academics":
+        prompt_goal = (
+            "Create ONE excellent copy/paste prompt that the user can paste into an AI to generate "
+            "a high-quality academic deliverable (study guide, practice questions, summaries, or a study plan)."
+        )
+        deliverables_hint = (
+            "Ask the AI to produce: a structured study guide, key concepts, practice questions with answers, "
+            "common pitfalls, and (optionally) a study schedule."
+        )
+    elif payload.category == "general":
+        prompt_goal = (
+            "Create ONE excellent copy/paste prompt that the user can paste into an AI to get a high-quality response "
+            "for their general request."
+        )
+        deliverables_hint = (
+            "Ask the AI to provide a structured response, step-by-step guidance if relevant, examples/templates, "
+            "and clearly stated assumptions."
+        )
+    else:
+        prompt_goal = (
+            "Create ONE excellent copy/paste prompt that the user can paste into an AI to get "
+            "a full app/software plan and implementation guidance."
+        )
+        deliverables_hint = (
+            "Ask the AI to produce an MVP plan, feature list, UI/screens, data model, "
+            "recommended tech stack, and a step-by-step build plan."
+        )
 
     try:
         resp = client.responses.create(
@@ -275,9 +356,10 @@ def generate_prompt(payload: PromptRequest):
                 {
                     "role": "developer",
                     "content": (
-                        "Create ONE excellent copy/paste prompt that the user can paste into an AI to get "
-                        "a full app/software plan + starter implementation guidance.\n"
+                        cat_context + "\n\n"
+                        + prompt_goal + "\n"
                         "The prompt must be structured, specific, and incorporate the user's answers.\n"
+                        + deliverables_hint + "\n\n"
                         "Return ONLY the prompt text (no markdown fences)."
                     ),
                 },
@@ -293,10 +375,26 @@ def generate_prompt(payload: PromptRequest):
         )
 
         out = resp.output_text.strip()
-        return {"prompt": out if out else fallback_prompt()}
+
+        if not out:
+            raise RuntimeError("Empty AI response")
+
+        return {"prompt": out}
 
     except Exception:
-        return {"prompt": fallback_prompt()}
+        # If OpenAI errors mid-request
+        if DEV_MODE:
+            return {"prompt": dev_fallback_prompt()}
+        return {
+            "prompt": (
+                "⚠️ AI service error.\n\n"
+                "The app encountered an error while generating your prompt.\n"
+                "Please try again in a moment."
+            )
+        }
+
+
+
     
 @app.post("/suggest-answer", response_model=SuggestAnswerResponse)
 def suggest_answer(payload: SuggestAnswerRequest):

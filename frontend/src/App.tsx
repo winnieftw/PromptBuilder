@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
-import { generatePrompt, generateQuestions, suggestAnswer, type Question } from "./api";
-
+import { generatePrompt, generateQuestions, suggestAnswer, type Question, type Category } from "./api";
 
 type Answers = Record<string, any>;
 
@@ -13,11 +12,51 @@ function cleanAnswers(answers: Answers): Answers {
   );
 }
 
+/**
+ * Heuristic: if backend returns "prompt" but it is actually a service-status message,
+ * we treat it as a warning instead of a generated prompt.
+ */
+function looksLikeServiceMessage(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    t.includes("ai service unavailable") ||
+    t.includes("unable to connect") ||
+    t.includes("check your openai api key") ||
+    t.includes("ai service error")
+  );
+}
+
+// Frontend-readable labels (what you wanted), mapped to backend enums.
+const CATEGORY_OPTIONS: { label: string; value: Category; help: string }[] = [
+  {
+    label: "App / Software",
+    value: "app_dev",
+    help: "Generate requirements questions + a prompt for building an app/software plan.",
+  },
+  {
+    label: "Academics",
+    value: "academics",
+    help: "Study guides, practice questions, explanations, and learning plans.",
+  },
+  {
+    label: "General",
+    value: "general",
+    help: "Any other use-case (emails, plans, writing, brainstorming, etc.).",
+  },
+];
+
 export default function App() {
   const [idea, setIdea] = useState("");
+
+  // NEW: category toggle (readable in UI, mapped to backend enum value)
+  const [category, setCategory] = useState<Category>("app_dev");
+
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Answers>({});
   const [finalPrompt, setFinalPrompt] = useState<string>("");
+
+  // NEW: banner message when AI is unavailable / errored
+  const [serviceMessage, setServiceMessage] = useState<string>("");
 
   // Suggestion Options States
   const [autoFillLoading, setAutoFillLoading] = useState(false);
@@ -26,21 +65,21 @@ export default function App() {
     total: 0,
   });
 
-
   const [loadingQuestions, setLoadingQuestions] = useState(false);
   const [loadingPrompt, setLoadingPrompt] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
 
   async function onGenerateQuestions() {
     setError(null);
+    setServiceMessage("");
     setQuestions([]);
     setAnswers({});
     setFinalPrompt("");
     setLoadingQuestions(true);
 
     try {
-      const data = await generateQuestions(idea.trim());
+      // IMPORTANT: backend expects "description" for generate-questions
+      const data = await generateQuestions(category, idea.trim());
       setQuestions(data.questions);
 
       // Initialize answer shapes so inputs are controlled
@@ -80,7 +119,7 @@ export default function App() {
       if (q.type === "multi_select") {
         if (!Array.isArray(val) || val.length === 0) missing.push(q.id);
       } else if (q.type === "boolean") {
-        // Treat required boolean as not missing (it's always set to true/false)
+        // boolean is always set to true/false; treat as not missing
       } else {
         if (val === null || val === undefined || String(val).trim() === "") missing.push(q.id);
       }
@@ -176,22 +215,31 @@ export default function App() {
         );
 
       default:
-        return <div style={{ color: "red" }}>Unsupported question type: {q.type}</div>;
+        return <div style={{ color: "red" }}>Unsupported question type: {(q as any).type}</div>;
     }
   }
 
   async function onGeneratePrompt() {
     setError(null);
+    setServiceMessage("");
     setFinalPrompt("");
     setLoadingPrompt(true);
 
     try {
       const cleaned = cleanAnswers(answers);
       const res = await generatePrompt({
+        category,
         idea: idea.trim(),
         answers: cleaned,
       });
-      setFinalPrompt(res.prompt);
+
+      // NEW: if backend returns a service-status message, show it as a banner
+      if (looksLikeServiceMessage(res.prompt)) {
+        setServiceMessage(res.prompt);
+        setFinalPrompt("");
+      } else {
+        setFinalPrompt(res.prompt);
+      }
     } catch (e: any) {
       setError(e?.message ?? "Unknown error");
     } finally {
@@ -207,38 +255,39 @@ export default function App() {
     }
   }
 
-  // For "suggest me"/"autofill"
+  // Global auto-fill
   async function onAutoFillAll() {
     if (!idea.trim() || questions.length === 0) return;
 
     setError(null);
+    setServiceMessage("");
     setAutoFillLoading(true);
     setAutoFillProgress({ done: 0, total: questions.length });
 
     try {
-      // We'll build up answers gradually so each next suggestion sees prior selections.
       let workingAnswers = { ...answers };
 
       for (let i = 0; i < questions.length; i++) {
         const q = questions[i];
 
-        // optional: skip if already answered (comment out if you want overwrite behavior)
         const existing = workingAnswers[q.id];
         const hasValue =
           q.type === "boolean"
-            ? false // always allow autofill to set it
+            ? false
             : (Array.isArray(existing) && existing.length > 0) ||
               (!Array.isArray(existing) && existing !== "" && existing !== null && existing !== undefined);
 
         if (!hasValue) {
           const res = await suggestAnswer({
+            category,
             idea: idea.trim(),
             question: q,
             current_answers: cleanAnswers(workingAnswers),
           });
 
+          // Suggest-answer returns { id, value }
           workingAnswers = { ...workingAnswers, [res.id]: res.value };
-          setAnswers(workingAnswers); // update UI as we go
+          setAnswers(workingAnswers);
         }
 
         setAutoFillProgress({ done: i + 1, total: questions.length });
@@ -250,16 +299,57 @@ export default function App() {
     }
   }
 
+  // Optional: if a service message is active, disable AI buttons to prevent repeated confusion
+  const aiUnavailable = serviceMessage.length > 0;
+
+  const categoryHelp = CATEGORY_OPTIONS.find((c) => c.value === category)?.help ?? "";
 
   return (
     <div style={{ maxWidth: 950, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
       <h1 style={{ marginBottom: 8 }}>Kora (Web Prototype)</h1>
       <p style={{ marginTop: 0, color: "#555" }}>
-        Step 1: write your idea → Step 2: answer questions → Step 3: generate a perfect prompt.
+        Step 1: choose a category + write your idea → Step 2: answer questions → Step 3: generate a perfect prompt.
       </p>
 
+      {/* Category toggle */}
+      <div style={{ marginTop: 12, marginBottom: 10 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          {CATEGORY_OPTIONS.map((opt) => {
+            const active = opt.value === category;
+            return (
+              <button
+                key={opt.value}
+                onClick={() => setCategory(opt.value)}
+                disabled={loadingQuestions || autoFillLoading || loadingPrompt}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 999,
+                  border: "1px solid #222",
+                  background: active ? "#222" : "#fff",
+                  color: active ? "#fff" : "#111",
+                  cursor: loadingQuestions || autoFillLoading || loadingPrompt ? "default" : "pointer",
+                  fontSize: 13,
+                }}
+                title={opt.help}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>{categoryHelp}</div>
+      </div>
+
+      {/* Service message banner */}
+      {serviceMessage && (
+        <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: "#fff3cd" }}>
+          <strong>Notice:</strong>
+          <div style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{serviceMessage}</div>
+        </div>
+      )}
+
       {/* Step 1 */}
-      <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginTop: 12 }}>
         <textarea
           value={idea}
           onChange={(e) => setIdea(e.target.value)}
@@ -302,15 +392,16 @@ export default function App() {
           <div style={{ margin: "10px 0 16px", display: "flex", gap: 12, alignItems: "center" }}>
             <button
               onClick={onAutoFillAll}
-              disabled={autoFillLoading}
+              disabled={autoFillLoading || aiUnavailable}
               style={{
                 padding: "10px 14px",
                 borderRadius: 8,
                 border: "1px solid #222",
-                background: autoFillLoading ? "#ddd" : "#fff",
-                cursor: autoFillLoading ? "default" : "pointer",
+                background: autoFillLoading || aiUnavailable ? "#ddd" : "#fff",
+                cursor: autoFillLoading || aiUnavailable ? "default" : "pointer",
                 fontSize: 13,
               }}
+              title={aiUnavailable ? "AI is unavailable right now." : ""}
             >
               {autoFillLoading ? "Auto-filling..." : "Auto-fill all"}
             </button>
@@ -322,13 +413,9 @@ export default function App() {
             )}
           </div>
 
-
-
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
             <h2 style={{ marginBottom: 8 }}>Answer the questions</h2>
-            <div style={{ fontSize: 12, color: "#666" }}>
-              Missing required: {requiredMissing.length}
-            </div>
+            <div style={{ fontSize: 12, color: "#666" }}>Missing required: {requiredMissing.length}</div>
           </div>
 
           <div style={{ display: "grid", gap: 12 }}>
@@ -369,15 +456,16 @@ export default function App() {
           <div style={{ marginTop: 16, display: "flex", gap: 12, alignItems: "center" }}>
             <button
               onClick={onGeneratePrompt}
-              disabled={loadingPrompt || requiredMissing.length > 0}
+              disabled={loadingPrompt || requiredMissing.length > 0 || aiUnavailable}
               style={{
                 padding: "12px 16px",
                 borderRadius: 8,
                 border: "1px solid #222",
-                background: loadingPrompt || requiredMissing.length > 0 ? "#ddd" : "#0b5",
+                background: loadingPrompt || requiredMissing.length > 0 || aiUnavailable ? "#ddd" : "#0b5",
                 color: "#111",
-                cursor: loadingPrompt || requiredMissing.length > 0 ? "not-allowed" : "pointer",
+                cursor: loadingPrompt || requiredMissing.length > 0 || aiUnavailable ? "not-allowed" : "pointer",
               }}
+              title={aiUnavailable ? "AI is unavailable right now." : ""}
             >
               {loadingPrompt ? "Generating prompt..." : "Generate Prompt"}
             </button>
@@ -389,7 +477,7 @@ export default function App() {
             )}
           </div>
 
-          {/* Debug (optional) */}
+          {/* Debug */}
           <div style={{ marginTop: 20 }}>
             <h3 style={{ marginBottom: 8 }}>Answers JSON (debug)</h3>
             <pre style={{ background: "#111", color: "#eee", padding: 12, borderRadius: 10, overflowX: "auto" }}>
@@ -419,10 +507,7 @@ export default function App() {
             <button onClick={copyPrompt} style={{ padding: "10px 14px", borderRadius: 8 }}>
               Copy Prompt
             </button>
-            <button
-              onClick={() => setFinalPrompt("")}
-              style={{ padding: "10px 14px", borderRadius: 8 }}
-            >
+            <button onClick={() => setFinalPrompt("")} style={{ padding: "10px 14px", borderRadius: 8 }}>
               Clear
             </button>
           </div>
